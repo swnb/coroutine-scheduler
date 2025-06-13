@@ -1,16 +1,40 @@
-首先第一次 runtime 跳转到 wrapper-fn
+# 单线程协程
 
-1. runtime 保存当前上下文，load coroutine 上下文
+示例
 
-2. coroutine 继续运行，生成了很多栈数据和寄存器数据
+```rust
 
-3. 跳回来，保存寄存器值，br 到 runtime 地方
+let runtime = Runtime::new();
 
-4. runtime 又跳转回去，保存当前上下文，load coroutine 上下文，再跳过去
+// 创建多个协程任务，每个任务会执行多次并主动让出控制权
+for task_id in 1..=5 {
+    runtime.spawn({
+        let runtime = runtime.clone();
+        move || {
+            for step in 1..=3 {
+                println!("任务 {} 正在执行步骤 {}", task_id, step);
+                if step < 3 {
+                    // 主动让出控制权，让其他协程有机会执行
+                    runtime.schedule();
+                }
+            }
+            println!("任务 {} 完成", task_id);
+        }
+    });
+}
 
-load coroutine 怎么 load
+println!("开始运行所有协程...");
+runtime.wait();
+println!("所有协程执行完成!");
+```
 
-callee-要恢复，sp，fp 也要恢复， lr 也要恢复
-这里最大的问题是 pc 怎么恢复，第一次的时候是跳转到 wrapper_fn
-后面每次 runtime_yield 都是一个 adr 地址
-所以 coroutine 保存的时候也要保存地址
+![result](./docs/result.png)
+
+
+## 仅用于学习目的
+
+使用 arm64 汇编，没考虑其它平台
+
+[zhihu 详解文章](https://zhuanlan.zhihu.com/p/1916632808568383306)
+
+![](./docs/arch.png)
