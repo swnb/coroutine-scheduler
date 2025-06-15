@@ -1,0 +1,24 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Coroutine Scheduler Architecture
+
+This project is a from-scratch implementation of a coroutine scheduler in Rust, using ARM64 assembly for context switching.
+
+The current goal is to evolve the scheduler from a single-threaded model to a high-performance, multi-threaded work-stealing model.
+
+## Core Components
+
+*   **Coroutine Implementation (`src/coroutine.rs`)**: This file defines the `Coroutine` and `CoroutineContext` structs. It contains the low-level logic for stack allocation and assembly code for saving/restoring CPU registers. See [src/coroutine.rs](mdc:src/coroutine.rs).
+
+*   **Runtime & Scheduler (`src/runtime.rs`)**: This is the heart of the scheduler. It is currently being refactored to support a multi-threaded work-stealing architecture. The design principles for this refactoring are outlined in the work-stealing documentation. See [src/runtime.rs](mdc:src/runtime.rs).
+
+*   **Library Entrypoint (`src/lib.rs`)**: This file exposes the public API of the scheduler, primarily the `Runtime` struct, and contains the test suite. See [src/lib.rs](mdc:src/lib.rs).
+
+## Design Documentation
+
+The plan for refactoring to a multi-threaded work-stealing model is detailed in the design document. This document should be consulted for understanding the target architecture.
+
+*   **Work-Stealing Guide**: [docs/work_stealing_explained.md](mdc:docs/work_stealing_explained.md)
