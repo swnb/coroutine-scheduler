@@ -6,8 +6,8 @@ use std::{
 use crate::runtime::{InnerRuntime, restore_context, store_context};
 
 type Register = usize;
-pub trait TaskFn: FnOnce() + 'static {}
-impl<F: FnOnce() + 'static> TaskFn for F {}
+pub trait TaskFn: FnOnce() + 'static + Send {}
+impl<F: FnOnce() + 'static + Send> TaskFn for F {}
 
 #[derive(Debug, Default)]
 // 内存布局要求跟我写的代码保持一致，编译器不能改动
@@ -31,6 +31,8 @@ pub struct CoroutineContext {
     task: usize,
     runtime_ptr: usize,
 }
+
+unsafe impl Send for CoroutineContext {}
 
 impl CoroutineContext {
     fn init<F: TaskFn>(
@@ -79,6 +81,8 @@ pub struct Coroutine {
     stack_bottom: *mut u8,
     stack_size: usize,
 }
+
+unsafe impl Send for Coroutine {}
 
 impl Drop for Coroutine {
     fn drop(&mut self) {

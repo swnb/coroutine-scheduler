@@ -1,11 +1,13 @@
 use crate::coroutine::{Coroutine, CoroutineContext, TaskFn};
+use crate::worker::{Worker, WorkerState, get_current_worker_id, push_to_local_queue};
+use crossbeam_deque::Injector;
 use std::{
     arch::{asm, naked_asm},
     cell::UnsafeCell,
     collections::BTreeMap,
     ops::Deref,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -14,31 +16,42 @@ use std::{
 pub struct InnerRuntime {
     context: CoroutineContext,
     current_coroutine_id: AtomicUsize,
-    coroutines: UnsafeCell<BTreeMap<usize, Coroutine>>,
+    coroutines: Mutex<BTreeMap<usize, Coroutine>>,
     id_counter: AtomicUsize,
+    global_queue: Arc<Injector<Coroutine>>,
+    workers: Vec<Worker>,
+    worker_states: Arc<Mutex<Vec<WorkerState>>>,
 }
 
 impl InnerRuntime {
     pub fn spawn<F: TaskFn>(&self, task: F) {
         let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
         let coroutine = Coroutine::new(id, task, self);
-        self.coroutines().insert(coroutine.id(), coroutine);
+
+        if get_current_worker_id().is_some() {
+            push_to_local_queue(coroutine);
+        } else {
+            self.global_queue.push(coroutine);
+        }
     }
 
     pub fn wait(&self) {
-        while !self.coroutines().is_empty() {
-            self.coroutines().retain(|_, coroutine| {
-                self.update_current_coroutine_id(coroutine.id());
-                coroutine.resume()
-            });
+        loop {
+            {
+                let coroutines = self.coroutines.lock().unwrap();
+                if coroutines.is_empty() {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 
     #[inline(never)]
     pub fn schedule(&self) {
         let current_id = self.current_coroutine_id.load(Ordering::Relaxed);
-        // store current context and restore runtime context;
-        let current_coroutine = self.coroutines().get(&current_id).unwrap();
+        let mut coroutines = self.coroutines.lock().unwrap();
+        let current_coroutine = coroutines.get(&current_id).unwrap();
         let context = current_coroutine.context();
         let runtime_context = &self.context;
 
@@ -61,16 +74,15 @@ impl InnerRuntime {
         }
     }
 
-    fn coroutines(&self) -> &mut BTreeMap<usize, Coroutine> {
-        unsafe { &mut *self.coroutines.get() }
-    }
-
     fn update_current_coroutine_id(&self, id: usize) {
         self.current_coroutine_id.store(id, Ordering::Relaxed);
     }
 }
 
 pub struct Runtime(Arc<InnerRuntime>);
+
+unsafe impl Send for Runtime {}
+unsafe impl Sync for Runtime {}
 
 impl Clone for Runtime {
     fn clone(&self) -> Self {
@@ -87,14 +99,44 @@ impl Deref for Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
+        Self::new_with_threads(num_cpus::get())
+    }
+
+    pub fn new_with_threads(num_threads: usize) -> Self {
+        let num_threads = std::cmp::max(1, num_threads);
+
+        let global_queue = Arc::new(Injector::new());
+
+        let worker_states = Arc::new(Mutex::new(Vec::with_capacity(num_threads)));
+
         let runtime = Arc::new(InnerRuntime {
             id_counter: AtomicUsize::new(0),
             current_coroutine_id: AtomicUsize::new(0),
-            coroutines: UnsafeCell::new(BTreeMap::new()),
+            coroutines: Mutex::new(BTreeMap::new()),
             context: CoroutineContext::default(),
+            global_queue: global_queue.clone(),
+            workers: Vec::new(),
+            worker_states: worker_states.clone(),
         });
 
-        Runtime(runtime)
+        let mut workers = Vec::with_capacity(num_threads);
+
+        for id in 0..num_threads {
+            let global_queue_clone = global_queue.clone();
+            let states_clone = worker_states.clone();
+            let (worker, state) = Worker::new(id, global_queue_clone, states_clone);
+
+            {
+                let mut states = worker_states.lock().unwrap();
+                states.push(state);
+            }
+
+            workers.push(worker);
+        }
+
+        let result = Runtime(runtime);
+
+        result
     }
 }
 
